@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+env/
+.env
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs / experiment outputs
+logs/
+outputs/
+results/
+*.log
+*.csv
+*.npz
+*.npy
+
+# MuJoCo / rendering captures
+recordings/
+videos/
+*.mp4
+*.avi
+
+# Isaac Sim local caches / generated data
+isaac_cache/
+ov/
+kit/cache/
+
+# Large local assets and third-party simulator installs
+third_party/
+external/
+
+# Keep model source files that are intentionally committed under models/
