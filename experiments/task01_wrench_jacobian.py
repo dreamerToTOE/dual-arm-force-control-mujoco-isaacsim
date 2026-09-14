@@ -1,8 +1,11 @@
 """Task01: FR3 TCP Jacobian, wrench mapping, and finite-difference check.
 
-Example:
+Examples:
     python3 experiments/task01_wrench_jacobian.py \
         --model ~/mujoco_menagerie/franka_fr3/scene.xml
+
+    python3 experiments/task01_wrench_jacobian.py \
+        --model ~/mujoco_menagerie/franka_fr3/scene.xml --viewer
 """
 
 from __future__ import annotations
@@ -10,6 +13,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import sys
+import time
 
 import mujoco
 import numpy as np
@@ -29,6 +33,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", required=True, help="Path to Menagerie FR3 scene.xml or fr3.xml")
     parser.add_argument("--force-z", type=float, default=10.0, help="TCP force along +base Z [N]")
     parser.add_argument("--eps", type=float, default=1e-6, help="Finite-difference step [rad]")
+    parser.add_argument(
+        "--viewer",
+        action="store_true",
+        help="Open a MuJoCo viewer showing the FR3, TCP frame, and commanded force arrow",
+    )
     return parser.parse_args()
 
 
@@ -71,6 +80,72 @@ def finite_difference_tcp_position_jacobian(
 
     set_q(adapter, q0)
     return j_fd
+
+
+def add_force_arrow(viewer, p_tcp: np.ndarray, force_base: np.ndarray) -> None:
+    """Add a purely visual arrow for a base-frame force vector.
+
+    The arrow direction is physical; its displayed length is only a visualization
+    scale and is not measured in Newtons or metres.
+    """
+    magnitude = float(np.linalg.norm(force_base))
+    if magnitude <= 0.0:
+        return
+
+    direction = force_base / magnitude
+    arrow_length = float(np.clip(0.02 * magnitude, 0.12, 0.35))
+    arrow_start = np.asarray(p_tcp, dtype=float)
+    arrow_end = arrow_start + arrow_length * direction
+
+    scene = viewer.user_scn
+    if scene.ngeom >= scene.maxgeom:
+        raise RuntimeError("MuJoCo viewer user scene has no free geom slots")
+
+    geom = scene.geoms[scene.ngeom]
+    mujoco.mjv_initGeom(
+        geom,
+        mujoco.mjtGeom.mjGEOM_ARROW,
+        np.zeros(3),
+        np.zeros(3),
+        np.eye(3).reshape(-1),
+        np.array([0.95, 0.25, 0.15, 1.0], dtype=np.float32),
+    )
+    mujoco.mjv_connector(
+        geom,
+        mujoco.mjtGeom.mjGEOM_ARROW,
+        0.012,
+        arrow_start,
+        arrow_end,
+    )
+    scene.ngeom += 1
+
+
+def show_viewer(adapter: MuJoCoAdapter, p_tcp: np.ndarray, wrench: np.ndarray) -> None:
+    """Show a static Task01 visualization until the user closes the window."""
+    import mujoco.viewer
+
+    print("\n=== Task01 viewer ===")
+    print("The colored frame at the attachment site is the TCP frame.")
+    print("The arrow starts at the TCP and shows the commanded force direction in the base frame.")
+    print("Arrow length is visual only; the numeric force remains the printed wrench value.")
+    print("Close the MuJoCo window to return to the terminal.")
+
+    with mujoco.viewer.launch_passive(adapter.model, adapter.data) as viewer:
+        # Show site coordinate frames. The Menagerie FR3 uses attachment_site as
+        # the TCP for this teaching project.
+        viewer.opt.frame = mujoco.mjtFrame.mjFRAME_SITE
+
+        # Put the camera on the arm/TCP instead of relying on the default view.
+        viewer.cam.lookat[:] = p_tcp
+        viewer.cam.distance = 1.35
+        viewer.cam.azimuth = 135.0
+        viewer.cam.elevation = -20.0
+
+        add_force_arrow(viewer, p_tcp, wrench[:3])
+
+        while viewer.is_running():
+            viewer.sync()
+            time.sleep(0.02)
 
 
 def main() -> None:
@@ -135,6 +210,9 @@ def main() -> None:
         )
 
     print("\nPASS: J is 6x7, tau = J^T W is finite, and translational Jacobian matches finite differences.")
+
+    if args.viewer:
+        show_viewer(adapter, p_tcp, wrench)
 
 
 if __name__ == "__main__":
