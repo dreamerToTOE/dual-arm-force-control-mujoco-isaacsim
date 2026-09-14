@@ -128,6 +128,19 @@ def _add_arrow(
     )
 
 
+def _lateral_offset_direction(direction: np.ndarray) -> np.ndarray:
+    """Return a stable unit vector perpendicular to direction for visual offset."""
+    direction = np.asarray(direction, dtype=float)
+    reference = np.array([1.0, 0.0, 0.0])
+    if abs(float(np.dot(direction, reference))) > 0.9:
+        reference = np.array([0.0, 1.0, 0.0])
+    lateral = reference - np.dot(reference, direction) * direction
+    norm = float(np.linalg.norm(lateral))
+    if norm < 1e-12:
+        return np.array([0.0, 1.0, 0.0])
+    return lateral / norm
+
+
 def draw_task01_debug_geometry(
     viewer,
     p_tcp: np.ndarray,
@@ -135,15 +148,12 @@ def draw_task01_debug_geometry(
     force_base: np.ndarray,
 ) -> None:
     """Redraw the TCP marker, TCP axes, and base-frame force arrow every frame."""
-    # Passive viewer versions can rebuild their rendered scene during sync(), so
-    # reconstruct our user geoms on every frame for reliable visibility.
     viewer.user_scn.ngeom = 0
 
     p_tcp = np.asarray(p_tcp, dtype=float)
     r_tcp = np.asarray(r_tcp, dtype=float)
     force_base = np.asarray(force_base, dtype=float)
 
-    # Bright TCP marker so the user can immediately locate the origin.
     _add_sphere(
         viewer,
         p_tcp,
@@ -151,31 +161,40 @@ def draw_task01_debug_geometry(
         rgba=np.array([1.0, 1.0, 0.15, 1.0], dtype=np.float32),
     )
 
-    # Explicit TCP axes. Columns of R_base_tcp are the TCP x/y/z axes expressed
-    # in the base frame.
     axis_length = 0.16
     axis_width = 0.008
     axis_colors = (
-        np.array([0.95, 0.10, 0.10, 1.0], dtype=np.float32),  # TCP +X: red
-        np.array([0.10, 0.90, 0.20, 1.0], dtype=np.float32),  # TCP +Y: green
-        np.array([0.10, 0.35, 1.00, 1.0], dtype=np.float32),  # TCP +Z: blue
+        np.array([0.95, 0.10, 0.10, 1.0], dtype=np.float32),
+        np.array([0.10, 0.90, 0.20, 1.0], dtype=np.float32),
+        np.array([0.10, 0.35, 1.00, 1.0], dtype=np.float32),
     )
     for axis_index, color in enumerate(axis_colors):
         axis_end = p_tcp + axis_length * r_tcp[:, axis_index]
         _add_arrow(viewer, p_tcp, axis_end, axis_width, color)
 
-    # Force arrow is expressed in the BASE frame, not in the TCP frame.
+    # Force is physically applied at TCP, but the visual arrow is shifted
+    # sideways so it cannot disappear inside the robot geometry. Translation
+    # of the drawing does NOT change the represented force direction/frame.
     magnitude = float(np.linalg.norm(force_base))
     if magnitude > 0.0:
         direction = force_base / magnitude
-        force_length = float(np.clip(0.025 * magnitude, 0.25, 0.45))
-        force_start = p_tcp + 0.035 * direction
+        lateral = _lateral_offset_direction(direction)
+        force_length = float(np.clip(0.03 * magnitude, 0.30, 0.50))
+        force_start = p_tcp + 0.11 * lateral + 0.02 * direction
         force_end = force_start + force_length * direction
+
+        # Orange marker identifies the displaced visual arrow origin.
+        _add_sphere(
+            viewer,
+            force_start,
+            radius=0.018,
+            rgba=np.array([1.0, 0.55, 0.05, 1.0], dtype=np.float32),
+        )
         _add_arrow(
             viewer,
             force_start,
             force_end,
-            width=0.022,
+            width=0.028,
             rgba=np.array([1.0, 0.55, 0.05, 1.0], dtype=np.float32),
         )
 
@@ -195,7 +214,9 @@ def show_viewer(
     print("Green arrow   : TCP +Y")
     print("Blue arrow    : TCP +Z")
     print("Orange arrow  : commanded force, expressed in BASE frame")
-    print("Arrow lengths are visual only; the numeric force remains the printed wrench value.")
+    print("NOTE: orange arrow is shifted sideways only to avoid 3D occlusion;")
+    print("      the represented physical force is still applied at the TCP.")
+    print("Arrow lengths are visual only; numeric force is the printed wrench value.")
     print("Close the MuJoCo window to return to the terminal.")
 
     with mujoco.viewer.launch_passive(adapter.model, adapter.data) as viewer:
