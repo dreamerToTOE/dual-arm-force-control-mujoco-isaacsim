@@ -33,9 +33,8 @@ class MuJoCoAdapter:
     MuJoCo Menagerie's FR3 model ships with position actuators, whose ``ctrl``
     values are position references rather than torques.
 
-    Task01 adds TCP pose and geometric Jacobian queries. 6D vectors use the
-    project convention ``[linear, angular]``; wrench vectors therefore use
-    ``[Fx, Fy, Fz, Mx, My, Mz]``.
+    6D vectors use the project convention ``[linear, angular]``; wrench vectors
+    therefore use ``[Fx, Fy, Fz, Mx, My, Mz]``.
     """
 
     def __init__(
@@ -64,6 +63,11 @@ class MuJoCoAdapter:
         )
         if self._base_body_id < 0:
             raise ValueError(f"Base body not found in MuJoCo model: {self.base_body_name}")
+
+        # Scratch data used for model-only queries that must not disturb the
+        # live simulation state. Task02 uses it to evaluate gravity torques at
+        # the current q with qdot = 0.
+        self._scratch_data = mujoco.MjData(self.model)
 
     @classmethod
     def from_xml_path(
@@ -97,6 +101,22 @@ class MuJoCoAdapter:
 
     def get_qdot(self) -> np.ndarray:
         return np.asarray([self.data.qvel[j.dof_adr] for j in self._joint_map], dtype=float)
+
+    def get_gravity(self) -> np.ndarray:
+        """Return 7-DoF gravity-compensation torque at the current q.
+
+        MuJoCo's ``qfrc_bias`` contains Coriolis/centrifugal and gravity bias
+        forces. Evaluating it in scratch data with qdot = 0 removes the velocity
+        terms, leaving the generalized torque required to balance gravity.
+        """
+        scratch = self._scratch_data
+        scratch.qpos[:] = self.data.qpos
+        scratch.qvel[:] = 0.0
+        scratch.qacc[:] = 0.0
+        mujoco.mj_forward(self.model, scratch)
+        return np.asarray(
+            [scratch.qfrc_bias[j.dof_adr] for j in self._joint_map], dtype=float
+        )
 
     def _world_to_base_rotation(self) -> np.ndarray:
         """Rotation that maps vector coordinates from world to base frame."""
