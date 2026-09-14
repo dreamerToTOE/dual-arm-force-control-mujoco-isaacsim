@@ -82,68 +82,130 @@ def finite_difference_tcp_position_jacobian(
     return j_fd
 
 
-def add_force_arrow(viewer, p_tcp: np.ndarray, force_base: np.ndarray) -> None:
-    """Add a purely visual arrow for a base-frame force vector.
-
-    The arrow direction is physical; its displayed length is only a visualization
-    scale and is not measured in Newtons or metres.
-    """
-    magnitude = float(np.linalg.norm(force_base))
-    if magnitude <= 0.0:
-        return
-
-    direction = force_base / magnitude
-    arrow_length = float(np.clip(0.02 * magnitude, 0.12, 0.35))
-    arrow_start = np.asarray(p_tcp, dtype=float)
-    arrow_end = arrow_start + arrow_length * direction
-
+def _next_user_geom(viewer):
     scene = viewer.user_scn
     if scene.ngeom >= scene.maxgeom:
         raise RuntimeError("MuJoCo viewer user scene has no free geom slots")
-
     geom = scene.geoms[scene.ngeom]
+    scene.ngeom += 1
+    return geom
+
+
+def _add_sphere(viewer, position: np.ndarray, radius: float, rgba: np.ndarray) -> None:
+    geom = _next_user_geom(viewer)
+    mujoco.mjv_initGeom(
+        geom,
+        mujoco.mjtGeom.mjGEOM_SPHERE,
+        np.array([radius, radius, radius], dtype=float),
+        np.asarray(position, dtype=float),
+        np.eye(3).reshape(-1),
+        np.asarray(rgba, dtype=np.float32),
+    )
+
+
+def _add_arrow(
+    viewer,
+    start: np.ndarray,
+    end: np.ndarray,
+    width: float,
+    rgba: np.ndarray,
+) -> None:
+    geom = _next_user_geom(viewer)
     mujoco.mjv_initGeom(
         geom,
         mujoco.mjtGeom.mjGEOM_ARROW,
         np.zeros(3),
         np.zeros(3),
         np.eye(3).reshape(-1),
-        np.array([0.95, 0.25, 0.15, 1.0], dtype=np.float32),
+        np.asarray(rgba, dtype=np.float32),
     )
     mujoco.mjv_connector(
         geom,
         mujoco.mjtGeom.mjGEOM_ARROW,
-        0.012,
-        arrow_start,
-        arrow_end,
+        float(width),
+        np.asarray(start, dtype=float),
+        np.asarray(end, dtype=float),
     )
-    scene.ngeom += 1
 
 
-def show_viewer(adapter: MuJoCoAdapter, p_tcp: np.ndarray, wrench: np.ndarray) -> None:
+def draw_task01_debug_geometry(
+    viewer,
+    p_tcp: np.ndarray,
+    r_tcp: np.ndarray,
+    force_base: np.ndarray,
+) -> None:
+    """Redraw the TCP marker, TCP axes, and base-frame force arrow every frame."""
+    # Passive viewer versions can rebuild their rendered scene during sync(), so
+    # reconstruct our user geoms on every frame for reliable visibility.
+    viewer.user_scn.ngeom = 0
+
+    p_tcp = np.asarray(p_tcp, dtype=float)
+    r_tcp = np.asarray(r_tcp, dtype=float)
+    force_base = np.asarray(force_base, dtype=float)
+
+    # Bright TCP marker so the user can immediately locate the origin.
+    _add_sphere(
+        viewer,
+        p_tcp,
+        radius=0.025,
+        rgba=np.array([1.0, 1.0, 0.15, 1.0], dtype=np.float32),
+    )
+
+    # Explicit TCP axes. Columns of R_base_tcp are the TCP x/y/z axes expressed
+    # in the base frame.
+    axis_length = 0.16
+    axis_width = 0.008
+    axis_colors = (
+        np.array([0.95, 0.10, 0.10, 1.0], dtype=np.float32),  # TCP +X: red
+        np.array([0.10, 0.90, 0.20, 1.0], dtype=np.float32),  # TCP +Y: green
+        np.array([0.10, 0.35, 1.00, 1.0], dtype=np.float32),  # TCP +Z: blue
+    )
+    for axis_index, color in enumerate(axis_colors):
+        axis_end = p_tcp + axis_length * r_tcp[:, axis_index]
+        _add_arrow(viewer, p_tcp, axis_end, axis_width, color)
+
+    # Force arrow is expressed in the BASE frame, not in the TCP frame.
+    magnitude = float(np.linalg.norm(force_base))
+    if magnitude > 0.0:
+        direction = force_base / magnitude
+        force_length = float(np.clip(0.025 * magnitude, 0.25, 0.45))
+        force_start = p_tcp + 0.035 * direction
+        force_end = force_start + force_length * direction
+        _add_arrow(
+            viewer,
+            force_start,
+            force_end,
+            width=0.022,
+            rgba=np.array([1.0, 0.55, 0.05, 1.0], dtype=np.float32),
+        )
+
+
+def show_viewer(
+    adapter: MuJoCoAdapter,
+    p_tcp: np.ndarray,
+    r_tcp: np.ndarray,
+    wrench: np.ndarray,
+) -> None:
     """Show a static Task01 visualization until the user closes the window."""
     import mujoco.viewer
 
     print("\n=== Task01 viewer ===")
-    print("The colored frame at the attachment site is the TCP frame.")
-    print("The arrow starts at the TCP and shows the commanded force direction in the base frame.")
-    print("Arrow length is visual only; the numeric force remains the printed wrench value.")
+    print("Yellow sphere : TCP origin")
+    print("Red arrow     : TCP +X")
+    print("Green arrow   : TCP +Y")
+    print("Blue arrow    : TCP +Z")
+    print("Orange arrow  : commanded force, expressed in BASE frame")
+    print("Arrow lengths are visual only; the numeric force remains the printed wrench value.")
     print("Close the MuJoCo window to return to the terminal.")
 
     with mujoco.viewer.launch_passive(adapter.model, adapter.data) as viewer:
-        # Show site coordinate frames. The Menagerie FR3 uses attachment_site as
-        # the TCP for this teaching project.
-        viewer.opt.frame = mujoco.mjtFrame.mjFRAME_SITE
-
-        # Put the camera on the arm/TCP instead of relying on the default view.
         viewer.cam.lookat[:] = p_tcp
-        viewer.cam.distance = 1.35
+        viewer.cam.distance = 1.15
         viewer.cam.azimuth = 135.0
-        viewer.cam.elevation = -20.0
-
-        add_force_arrow(viewer, p_tcp, wrench[:3])
+        viewer.cam.elevation = -18.0
 
         while viewer.is_running():
+            draw_task01_debug_geometry(viewer, p_tcp, r_tcp, wrench[:3])
             viewer.sync()
             time.sleep(0.02)
 
@@ -212,7 +274,7 @@ def main() -> None:
     print("\nPASS: J is 6x7, tau = J^T W is finite, and translational Jacobian matches finite differences.")
 
     if args.viewer:
-        show_viewer(adapter, p_tcp, wrench)
+        show_viewer(adapter, p_tcp, r_tcp, wrench)
 
 
 if __name__ == "__main__":
