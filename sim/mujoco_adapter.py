@@ -106,9 +106,23 @@ class MuJoCoAdapter:
         return np.asarray([self.data.qvel[j.dof_adr] for j in self._joint_map], dtype=float)
 
     def get_mass_matrix(self) -> np.ndarray:
-        """Return the 7x7 joint-space inertia/mass matrix M(q)."""
+        """Return the 7x7 joint-space inertia/mass matrix M(q).
+
+        MuJoCo changed the inertia storage/API in newer releases: older builds
+        expose ``MjData.qM`` and use ``mj_fullM(model, dst, qM)``, while newer
+        builds expose CSR-format ``MjData.M`` and use
+        ``mj_fullM(model, data, dst)``. Support both so the project does not
+        depend on one exact MuJoCo minor version.
+        """
         full_m = np.zeros((self.model.nv, self.model.nv), dtype=float)
-        mujoco.mj_fullM(self.model, full_m, self.data.qM)
+
+        if hasattr(self.data, "qM"):
+            # Legacy MuJoCo API.
+            mujoco.mj_fullM(self.model, full_m, self.data.qM)
+        else:
+            # Current MuJoCo API (qM removed in favour of CSR-format data.M).
+            mujoco.mj_fullM(self.model, self.data, full_m)
+
         idx = np.asarray(self.dof_indices, dtype=int)
         return full_m[np.ix_(idx, idx)].copy()
 
