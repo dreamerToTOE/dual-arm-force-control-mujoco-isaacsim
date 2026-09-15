@@ -64,9 +64,8 @@ class MuJoCoAdapter:
         if self._base_body_id < 0:
             raise ValueError(f"Base body not found in MuJoCo model: {self.base_body_name}")
 
-        # Scratch data used for model-only queries that must not disturb the
-        # live simulation state. Task02 uses it to evaluate gravity torques at
-        # the current q with qdot = 0.
+        # Scratch data is used for model-only queries that must not disturb the
+        # live simulation. In particular, gravity is evaluated at qdot=0.
         self._scratch_data = mujoco.MjData(self.model)
 
     @classmethod
@@ -96,18 +95,39 @@ class MuJoCoAdapter:
     def joint_map(self) -> tuple[JointMap, ...]:
         return self._joint_map
 
+    @property
+    def dof_indices(self) -> tuple[int, ...]:
+        return tuple(j.dof_adr for j in self._joint_map)
+
     def get_q(self) -> np.ndarray:
         return np.asarray([self.data.qpos[j.qpos_adr] for j in self._joint_map], dtype=float)
 
     def get_qdot(self) -> np.ndarray:
         return np.asarray([self.data.qvel[j.dof_adr] for j in self._joint_map], dtype=float)
 
+    def get_mass_matrix(self) -> np.ndarray:
+        """Return the 7x7 joint-space inertia/mass matrix M(q)."""
+        full_m = np.zeros((self.model.nv, self.model.nv), dtype=float)
+        mujoco.mj_fullM(self.model, full_m, self.data.qM)
+        idx = np.asarray(self.dof_indices, dtype=int)
+        return full_m[np.ix_(idx, idx)].copy()
+
+    def get_bias(self) -> np.ndarray:
+        """Return MuJoCo bias generalized forces for the seven FR3 joints.
+
+        For this fixed-base rigid-body model ``qfrc_bias`` is the model bias
+        term associated with Coriolis/centrifugal and gravity effects. Passive
+        joint damping/friction is not folded into this returned vector.
+        """
+        return np.asarray(
+            [self.data.qfrc_bias[j.dof_adr] for j in self._joint_map], dtype=float
+        ).copy()
+
     def get_gravity(self) -> np.ndarray:
         """Return 7-DoF gravity-compensation torque at the current q.
 
-        MuJoCo's ``qfrc_bias`` contains Coriolis/centrifugal and gravity bias
-        forces. Evaluating it in scratch data with qdot = 0 removes the velocity
-        terms, leaving the generalized torque required to balance gravity.
+        ``qfrc_bias`` contains velocity-dependent bias plus gravity. Evaluating
+        it at the same q with qdot=0 removes the velocity-dependent terms.
         """
         scratch = self._scratch_data
         scratch.qpos[:] = self.data.qpos
@@ -116,7 +136,14 @@ class MuJoCoAdapter:
         mujoco.mj_forward(self.model, scratch)
         return np.asarray(
             [scratch.qfrc_bias[j.dof_adr] for j in self._joint_map], dtype=float
-        )
+        ).copy()
+
+    def get_coriolis_centrifugal(self) -> np.ndarray:
+        """Return the velocity-dependent bias term C(q,qdot) qdot.
+
+        It is obtained as current bias minus gravity evaluated at the same q.
+        """
+        return self.get_bias() - self.get_gravity()
 
     def _world_to_base_rotation(self) -> np.ndarray:
         """Rotation that maps vector coordinates from world to base frame."""
