@@ -127,6 +127,74 @@ outputs/task04/pose_torque_comparison.png
 
 `pose_torque_comparison.png` 对比同一个 BASE-frame wrench 在不同姿态下对应的七关节 torque 分配。
 
+## 实际实验结果（2026-09-16）
+
+静态测试统一使用：
+
+```text
+W_des = [0, 0, 10, 0, 0, 0]^T
+```
+
+即 BASE frame 下 +Z 方向 10 N 纯力。
+
+HOME：
+
+```text
+tau_task = [0, -5.54499, 0, 4.71999, 0, 0.88, 0] N m
+sigma_min(Jv) = 0.236594
+```
+
+POSE_A：
+
+```text
+tau_task = [0, -4.27251, -0.37676, 4.46525, -0.20556, 1.31962, 0] N m
+sigma_min(Jv) = 0.200772
+```
+
+POSE_B：
+
+```text
+tau_task = [0, -5.24368, -0.31282, 3.82529, 0.13507, -0.00341, 0] N m
+sigma_min(Jv) = 0.254781
+```
+
+同一个 BASE-frame 末端力在不同姿态下得到不同的关节 torque 分配，验证了 `J(q)` 对构型的依赖。
+
+虚功/瞬时功率验证：
+
+```text
+qdot^T tau = 0.237199791 W
+xdot^T W   = 0.237199791 W
+|difference| = 5.551e-17 W
+```
+
+说明 `tau = J^T W` 与速度映射 `xdot = J qdot` 在功率意义下完全一致。
+
+随机搜索得到一个接近平移奇异性的诊断构型：
+
+```text
+singular values(Jv) = [0.958289, 0.809054, 0.013787]
+sigma_min(Jv) = 1.378704e-02
+```
+
+沿最弱平移方向施加 10 N：
+
+```text
+|Jv^T F_weak| = 0.137870 N m
+```
+
+这验证了：`sigma_min -> 0` 时，直接的 `J^T W` 映射并不会发散；相反，在对应弱方向上，给定末端力映射到关节空间的 torque 可以很小。真正容易产生数值放大的是 `J^-1` 或 pseudo-inverse 形式的反解。
+
+动态循环结果：
+
+```text
+peak |tau_task| = [0.00004, 3.77221, 0.00004, 2.83594, 0.00002, 0.83123, 0] N m
+peak |tau_total| = [0.00037, 29.32666, 0.03739, 21.86524, 0.83298, 2.19451, 0.0014] N m
+max |q-q_home| = [0, 0.03962, 0.00001, 0.02761, 0.00003, 0.01525, 0] rad
+```
+
+说明姿态保持 PD+g 能把机器人限制在 HOME 附近，同时额外的 `J^T W` torque 随期望 wrench 连续变化。
+
 ## 关于奇异构型
 
 本 Task 用平移 Jacobian：
@@ -159,6 +227,8 @@ sigma_min(Jv)
 - 动态 wrench 循环无 NaN/Inf；
 - 能解释为什么机器人姿态改变后 torque 分配也改变；
 - 能正确解释奇异构型对 Jacobian 映射的影响，而不是笼统地说“奇异点 torque 一定变无穷大”。
+
+**当前状态：PASS。**
 
 ## 教学门禁
 
