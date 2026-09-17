@@ -1,11 +1,12 @@
 """Task06 stage 1B: stabilized real-contact normal-force control.
 
-This experiment keeps the same P-vs-PI teaching goal as stage 1 but adds three
-practical ingredients needed for contact control:
+This experiment keeps the same P-vs-PI teaching goal as stage 1, but applies
+stabilization only after contact has been established:
 
-1) low-pass filtering of measured normal force,
-2) a slew-rate limit on the commanded push force,
-3) lower P/PI gains.
+1) the original, proven Cartesian-impedance approach is kept unchanged;
+2) measured normal force is low-pass filtered in force-control mode;
+3) the push-force command is slew-rate limited;
+4) P/PI gains are reduced relative to stage 1.
 
 It also reports force ripple/std, contact-loss ratio, and a sustained settling
 time so a good average force cannot hide unstable contact chatter.
@@ -19,7 +20,6 @@ from dataclasses import dataclass
 from pathlib import Path
 import sys
 import time
-import xml.etree.ElementTree as ET
 
 import matplotlib.pyplot as plt
 import mujoco
@@ -29,24 +29,32 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from controllers.cartesian_impedance import CartesianImpedance6D
 from controllers.force_pi import ForcePIController
 from sim.mujoco_adapter import MuJoCoAdapter
+from experiments.task06_contact_force_control import (
+    HOME_Q,
+    TORQUE_LIMITS,
+    PROBE_RADIUS,
+    INITIAL_GAP,
+    CONTACT_THRESHOLD,
+    F_DES,
+    disable_builtin_position_actuators,
+    set_home,
+    resolve_fr3_xml,
+    build_contact_scene,
+    contact_normal_force,
+    build_impedance_controllers,
+)
 
 
-HOME_Q = np.array([0.0, 0.0, 0.0, -1.57079, 0.0, 1.57079, -0.7853])
-TORQUE_LIMITS = np.array([87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0])
+# Important: keep the same proven approach depth as Stage 1.  Stabilization is
+# a post-contact concern; weakening the approach can prevent contact entirely.
+APPROACH_EXTRA = 0.012
 
-PROBE_RADIUS = 0.025
-INITIAL_GAP = 0.015
-APPROACH_EXTRA = 0.006
-CONTACT_THRESHOLD = 0.5
-
-F_DES = 10.0
 FORCE_COMMAND_LIMIT = 16.0
 INITIAL_FORCE_COMMAND = 4.0
-FORCE_FILTER_TAU = 0.030
-COMMAND_SLEW_RATE = 40.0
+FORCE_FILTER_TAU = 0.040
+COMMAND_SLEW_RATE = 20.0  # N/s
 DURATION = 7.0
 
 SETTLE_BAND = 0.5
@@ -63,7 +71,6 @@ class RunResult:
     time: np.ndarray
     normal_force_raw: np.ndarray
     normal_force_filtered: np.ndarray
-    contact_present: np.ndarray
     force_command: np.ndarray
     force_error: np.ndarray
     tcp_z: np.ndarray
@@ -80,165 +87,21 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def disable_builtin_position_actuators(model: mujoco.MjModel) -> None:
-    if model.nu:
-        model.actuator_gainprm[:, :] = 0.0
-        model.actuator_biasprm[:, :] = 0.0
-
-
-def set_home(adapter: MuJoCoAdapter) -> None:
-    for joint, value in zip(adapter.joint_map, HOME_Q):
-        adapter.data.qpos[joint.qpos_adr] = float(value)
-        adapter.data.qvel[joint.dof_adr] = 0.0
-    adapter.clear_joint_torque()
-    adapter.forward()
-
-
-def resolve_fr3_xml(model_path: Path) -> Path:
-    if model_path.name == "fr3.xml":
-        return model_path
-    sibling = model_path.parent / "fr3.xml"
-    if sibling.exists():
-        return sibling
-    raise FileNotFoundError(
-        f"Could not find fr3.xml next to {model_path}. Pass Menagerie fr3.xml or scene.xml."
-    )
-
-
-def _find_parent(root: ET.Element, child: ET.Element) -> ET.Element:
-    for parent in root.iter():
-        for candidate in parent:
-            if candidate is child:
-                return parent
-    raise RuntimeError("Could not find XML parent element")
-
-
-def build_contact_scene(fr3_xml: Path, output_xml: Path) -> tuple[float, float]:
-    base_adapter = MuJoCoAdapter.from_xml_path(str(fr3_xml))
-    disable_builtin_position_actuators(base_adapter.model)
-    set_home(base_adapter)
-    p_world, _ = base_adapter.get_tcp_pose(frame="world")
-    surface_z = float(p_world[2] - PROBE_RADIUS - INITIAL_GAP)
-
-    tree = ET.parse(fr3_xml)
-    root = tree.getroot()
-
-    compiler = root.find("compiler")
-    if compiler is None:
-        compiler = ET.Element("compiler")
-        root.insert(0, compiler)
-    compiler.set("meshdir", str((fr3_xml.parent / "assets").resolve()))
-
-    for default in root.iter("default"):
-        if default.get("class") == "collision":
-            for geom in default.findall("geom"):
-                geom.set("contype", "0")
-                geom.set("conaffinity", "0")
-
-    site = None
-    for candidate in root.iter("site"):
-        if candidate.get("name") == "attachment_site":
-            site = candidate
-            break
-    if site is None:
-        raise RuntimeError("attachment_site not found in fr3.xml")
-
-    parent = _find_parent(root, site)
-    probe = ET.Element(
-        "geom",
-        {
-            "name": "task06_probe",
-            "type": "sphere",
-            "pos": site.get("pos", "0 0 0.107"),
-            "size": f"{PROBE_RADIUS}",
-            "mass": "0.001",
-            "rgba": "1 0.8 0.05 1",
-            "contype": "1",
-            "conaffinity": "1",
-            "condim": "3",
-            "friction": "0.8 0.005 0.0001",
-        },
-    )
-    parent.insert(list(parent).index(site), probe)
-
-    worldbody = root.find("worldbody")
-    if worldbody is None:
-        raise RuntimeError("worldbody not found in fr3.xml")
-
-    ET.SubElement(
-        worldbody,
-        "geom",
-        {
-            "name": "task06_surface",
-            "type": "plane",
-            "pos": f"0 0 {surface_z:.9f}",
-            "size": "1 1 0.05",
-            "rgba": "0.25 0.35 0.45 1",
-            "contype": "1",
-            "conaffinity": "1",
-            "condim": "3",
-            "friction": "0.8 0.005 0.0001",
-            "solref": "0.030 1.0",
-            "solimp": "0.9 0.95 0.001 0.5 2",
-        },
-    )
-
-    output_xml.parent.mkdir(parents=True, exist_ok=True)
-    tree.write(output_xml, encoding="unicode")
-    return surface_z, float(p_world[2])
-
-
-def contact_measurement(
-    model: mujoco.MjModel,
-    data: mujoco.MjData,
-    probe_geom_id: int,
-    surface_geom_id: int,
-) -> tuple[float, bool]:
-    total = 0.0
-    present = False
-    wrench = np.zeros(6, dtype=float)
-
-    for i in range(data.ncon):
-        contact = data.contact[i]
-        pair = {int(contact.geom1), int(contact.geom2)}
-        if pair != {probe_geom_id, surface_geom_id}:
-            continue
-        present = True
-        mujoco.mj_contactForce(model, data, i, wrench)
-        total += max(0.0, float(wrench[0]))
-
-    return total, present
-
-
-def build_impedance_controllers() -> tuple[CartesianImpedance6D, CartesianImpedance6D]:
-    approach = CartesianImpedance6D.from_gains(
-        translational_stiffness=[160.0, 160.0, 140.0],
-        translational_damping=[30.0, 30.0, 40.0],
-        rotational_stiffness=[15.0, 15.0, 15.0],
-        rotational_damping=[3.0, 3.0, 3.0],
-        force_limits=[30.0, 30.0, 25.0],
-        moment_limits=[6.0, 6.0, 6.0],
-    )
-    lateral_hold = CartesianImpedance6D.from_gains(
-        translational_stiffness=[180.0, 180.0, 0.0],
-        translational_damping=[30.0, 30.0, 0.0],
-        rotational_stiffness=[15.0, 15.0, 15.0],
-        rotational_damping=[3.0, 3.0, 3.0],
-        force_limits=[35.0, 35.0, 35.0],
-        moment_limits=[6.0, 6.0, 6.0],
-    )
-    return approach, lateral_hold
-
-
 def build_force_controller(mode: str) -> ForcePIController:
     if mode == "p":
-        return ForcePIController(kp=0.8, ki=0.0, command_max=FORCE_COMMAND_LIMIT)
+        return ForcePIController(
+            kp=0.8,
+            ki=0.0,
+            command_min=0.5,
+            command_max=FORCE_COMMAND_LIMIT,
+        )
     if mode == "pi":
         return ForcePIController(
             kp=0.8,
-            ki=0.8,
+            ki=0.35,
+            command_min=0.5,
             command_max=FORCE_COMMAND_LIMIT,
-            integral_limit=14.0,
+            integral_limit=16.0,
         )
     raise ValueError(mode)
 
@@ -274,7 +137,6 @@ def simulate_case(contact_xml: Path, mode: str, surface_z: float) -> RunResult:
     time_log = np.zeros(steps)
     force_raw_log = np.zeros(steps)
     force_filt_log = np.zeros(steps)
-    contact_log = np.zeros(steps, dtype=bool)
     command_log = np.zeros(steps)
     error_log = np.zeros(steps)
     z_log = np.zeros(steps)
@@ -285,28 +147,32 @@ def simulate_case(contact_xml: Path, mode: str, surface_z: float) -> RunResult:
     contact_time = float("nan")
     filtered_force = 0.0
     force_command_state = 0.0
+    min_clearance = float("inf")
 
     for k in range(steps):
         t = float(adapter.data.time)
         p, r = adapter.get_tcp_pose(frame="base")
         j = adapter.get_jacobian(frame="base")
         twist = j @ adapter.get_qdot()
+        measured_force = contact_normal_force(adapter.model, adapter.data, probe_id, surface_id)
+        clearance = float(p[2] - (surface_z + PROBE_RADIUS))
+        min_clearance = min(min_clearance, clearance)
 
-        measured_force, contact_present = contact_measurement(
-            adapter.model, adapter.data, probe_id, surface_id
-        )
-
+        # Contact detection deliberately uses the RAW contact force.  Filtering
+        # is only introduced after the physical contact has been established.
         if not in_force_control and measured_force >= CONTACT_THRESHOLD:
             in_force_control = True
             contact_time = t
             force_controller.reset()
             filtered_force = measured_force
             force_command_state = float(
-                np.clip(max(INITIAL_FORCE_COMMAND, measured_force), 0.0, F_DES)
+                np.clip(max(INITIAL_FORCE_COMMAND, measured_force), 0.5, F_DES)
             )
 
         if not in_force_control:
-            filtered_force = low_pass(filtered_force, measured_force, dt)
+            # Keep Stage-1 approach behavior: no force-loop filtering/slew logic
+            # is allowed to weaken the motion toward the surface.
+            filtered_force = measured_force
             wrench_cmd = approach_controller.compute(
                 position=p,
                 rotation=r,
@@ -316,10 +182,12 @@ def simulate_case(contact_xml: Path, mode: str, surface_z: float) -> RunResult:
                 desired_rotation=r_home,
             )
             force_command = 0.0
-            force_error = F_DES - filtered_force
+            force_error = F_DES - measured_force
         else:
             filtered_force = low_pass(filtered_force, measured_force, dt)
 
+            # X/Y and orientation are held by impedance.  Z position stiffness
+            # is zero in hold_controller; the normal direction is force-controlled.
             hold_target = np.array([p_home[0], p_home[1], p[2]])
             wrench_cmd = hold_controller.compute(
                 position=p,
@@ -342,11 +210,10 @@ def simulate_case(contact_xml: Path, mode: str, surface_z: float) -> RunResult:
         time_log[k] = t
         force_raw_log[k] = measured_force
         force_filt_log[k] = filtered_force
-        contact_log[k] = contact_present
         command_log[k] = force_command
         error_log[k] = force_error
         z_log[k] = p[2]
-        clearance_log[k] = p[2] - (surface_z + PROBE_RADIUS)
+        clearance_log[k] = clearance
         tau_log[k] = tau
 
         if k < steps - 1:
@@ -357,14 +224,16 @@ def simulate_case(contact_xml: Path, mode: str, surface_z: float) -> RunResult:
             raise RuntimeError(f"NaN/Inf in Task06 stable mode={mode} at t={t:.4f}s")
 
     if not np.isfinite(contact_time):
-        raise RuntimeError(f"Mode {mode} never established contact")
+        raise RuntimeError(
+            f"Mode {mode} never established contact. "
+            f"Closest probe clearance was {min_clearance*1000.0:.3f} mm."
+        )
 
     return RunResult(
         mode=mode,
         time=time_log,
         normal_force_raw=force_raw_log,
         normal_force_filtered=force_filt_log,
-        contact_present=contact_log,
         force_command=command_log,
         force_error=error_log,
         tcp_z=z_log,
@@ -416,12 +285,9 @@ def force_metrics(result: RunResult) -> dict[str, float]:
     force_std = float(np.std(tail_raw))
     force_ripple = float(np.ptp(tail_raw))
 
-    stable_contact_mask = result.time >= result.contact_time + 0.2
-    lost = np.logical_or(
-        ~result.contact_present[stable_contact_mask],
-        result.normal_force_raw[stable_contact_mask] <= CONTACT_LOSS_FORCE,
-    )
-    contact_loss_ratio = 100.0 * float(np.mean(lost)) if np.any(stable_contact_mask) else float("nan")
+    stable_mask = result.time >= result.contact_time + 0.2
+    lost = result.normal_force_raw[stable_mask] <= CONTACT_LOSS_FORCE
+    contact_loss_ratio = 100.0 * float(np.mean(lost)) if np.any(stable_mask) else float("nan")
 
     return {
         "rise90": rise90,
@@ -444,7 +310,6 @@ def save_csv(result: RunResult, output_dir: Path) -> Path:
             "time",
             "normal_force_raw",
             "normal_force_filtered",
-            "contact_present",
             "force_command",
             "force_error",
             "tcp_z",
@@ -457,7 +322,6 @@ def save_csv(result: RunResult, output_dir: Path) -> Path:
                 result.time[k],
                 result.normal_force_raw[k],
                 result.normal_force_filtered[k],
-                int(result.contact_present[k]),
                 result.force_command[k],
                 result.force_error[k],
                 result.tcp_z[k],
@@ -497,7 +361,6 @@ def save_main_plot(results: dict[str, RunResult], output_dir: Path) -> Path:
     axes[1, 1].set_title("Probe-plane clearance")
     axes[1, 1].set_ylabel("clearance [mm]")
     axes[1, 1].set_xlabel("time since contact [s]")
-
     for ax in axes[1, :]:
         ax.grid(True)
         ax.legend()
@@ -602,21 +465,19 @@ def show_viewer(contact_xml: Path) -> None:
             p, r = adapter.get_tcp_pose(frame="base")
             j = adapter.get_jacobian(frame="base")
             twist = j @ adapter.get_qdot()
-            measured_force, _ = contact_measurement(
-                adapter.model, adapter.data, probe_id, surface_id
-            )
+            measured_force = contact_normal_force(adapter.model, adapter.data, probe_id, surface_id)
 
             if not in_force_control and measured_force >= CONTACT_THRESHOLD:
                 in_force_control = True
                 force_controller.reset()
                 filtered_force = measured_force
                 force_command_state = float(
-                    np.clip(max(INITIAL_FORCE_COMMAND, measured_force), 0.0, F_DES)
+                    np.clip(max(INITIAL_FORCE_COMMAND, measured_force), 0.5, F_DES)
                 )
 
             force_command = 0.0
             if not in_force_control:
-                filtered_force = low_pass(filtered_force, measured_force, dt)
+                filtered_force = measured_force
                 wrench_cmd = approach_controller.compute(
                     p, r, twist[:3], twist[3:], approach_target, r_home
                 )
@@ -670,12 +531,13 @@ def main() -> None:
 
     print("\n=== Task06 stage 1B: stabilized contact-force control ===")
     print("Contact geometry       : spherical TCP probe against horizontal plane")
-    print("Desired normal force   : 10.00 N")
+    print(f"Desired normal force   : {F_DES:.2f} N")
+    print("Approach               : Stage-1 impedance restored; stabilization starts after contact")
     print("Feedback signal        : low-pass filtered MuJoCo contact normal force")
     print(f"Force filter tau       : {FORCE_FILTER_TAU:.3f} s")
     print(f"Command slew rate      : {COMMAND_SLEW_RATE:.1f} N/s")
     print("P gains                : Kp=0.8, Ki=0")
-    print("PI gains               : Kp=0.8, Ki=0.8")
+    print("PI gains               : Kp=0.8, Ki=0.35")
     print(f"HOME TCP z             : {home_tcp_z:.5f} m")
     print(f"Surface z              : {surface_z:.5f} m")
 
