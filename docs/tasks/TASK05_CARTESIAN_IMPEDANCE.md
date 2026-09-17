@@ -4,9 +4,14 @@
 
 让末端呈现“虚拟弹簧 + 阻尼器”的动态行为，并理解阻抗控制和刚性位置控制的区别。
 
-本 Task 第一阶段只做 **3D 平移阻抗**。姿态阻抗暂不混在第一版里，避免同时引入旋转误差表示、四元数/旋转矩阵误差等新概念。
+Task05 分两阶段：
 
-## 核心思想
+1. 先做 **3D 平移阻抗**，理解笛卡尔刚度 `Kx` 与阻尼 `Dx`；
+2. 再扩展为 **6D 位姿阻抗**，加入姿态误差、角速度误差和旋转刚度/阻尼。
+
+---
+
+## Stage 1 — 3D Translational Impedance
 
 在 BASE frame 中：
 
@@ -25,13 +30,13 @@ tau_task = Jv^T F_cmd
 - `F_cmd`：虚拟弹簧 + 阻尼器产生的末端恢复力；
 - `tau_task`：通过 Jacobian transpose 映射得到的关节力矩。
 
-实际仿真使用：
+实际仿真：
 
 ```text
 tau_total = Jv^T F_cmd + g(q) + tau_external
 ```
 
-其中外部扰动力 `F_ext` 通过：
+外部扰动力通过：
 
 ```text
 tau_external = Jv^T F_ext
@@ -39,52 +44,33 @@ tau_external = Jv^T F_ext
 
 等效施加到 TCP。
 
-这仍然不是接触力闭环控制；Task06 才会加入真实接触和力反馈。
-
-## 当前实现
-
-控制器核心：
-
-```text
-controllers/cartesian_impedance.py
-```
-
-控制器本身与 MuJoCo 解耦，只完成：
-
-```text
-F_cmd = Kx (p_des-p) + Dx (v_des-v)
-```
-
-实验：
+### Stage-1 实验
 
 ```text
 experiments/task05_cartesian_impedance.py
 ```
 
-默认 HOME TCP 位置作为 `p_des`，并在：
+默认 HOME TCP 位置作为 `p_des`，在：
 
 ```text
 t = [1.0, 3.0) s
 ```
 
-给 TCP 施加：
+施加：
 
 ```text
 F_ext = [8, 0, 0] N
 ```
 
-即 BASE +X 方向的外力脉冲。
-
-程序自动完成两组对比：
-
-### 1. Stiffness sweep
+程序比较：
 
 ```text
 soft : Kx = 120 N/m
 hard : Kx = 400 N/m
-```
 
-观察相同外力下，软弹簧与硬弹簧产生的 TCP 位移差异。
+low_damping : Kx = 250 N/m, Dx = 5 N*s/m
+damped      : Kx = 250 N/m, Dx = 35 N*s/m
+```
 
 理想静态关系可粗略写为：
 
@@ -92,111 +78,179 @@ hard : Kx = 400 N/m
 |dx| ≈ |F_ext| / Kx
 ```
 
-因此刚度越高，同样外力下位移越小；但“位移小”不等于任何任务里都更好，阻抗控制恰恰常常需要有意保留柔顺性。
+但真实 FR3 还存在 joint frictionloss、damping、耦合、冗余自由度等，因此实际位移不必严格等于 `F/K`。
 
-### 2. Damping sweep
+第一阶段只控制 `p in R^3`，不控制 TCP orientation，因此允许姿态漂移。
+
+---
+
+## Stage 2 — Full 6D Cartesian Impedance
+
+Stage 2 在平移弹簧/阻尼之外增加姿态弹簧/阻尼。
+
+### 姿态误差
+
+本项目不直接对旋转矩阵或四元数做普通减法，而是使用 SO(3) 旋转误差：
 
 ```text
-low_damping : Kx = 250 N/m, Dx = 5 N*s/m
-damped      : Kx = 250 N/m, Dx = 35 N*s/m
+e_R = Log(R_des R^T)^vee
 ```
 
-观察：
+`e_R in R^3` 是 BASE frame 下的 rotation vector，可理解为“从当前 TCP 姿态旋到目标姿态所需的小旋转轴 × 角度”。
 
-- 阻尼太小时的振荡/超调；
-- 阻尼增加后更平稳的恢复；
-- 阻尼过大时可能造成迟缓。
+角速度误差：
 
-## 运行
-
-```bash
-python3 experiments/task05_cartesian_impedance.py \
-  --model ~/mujoco_menagerie/franka_fr3/scene.xml
+```text
+e_omega = omega_des - omega
 ```
 
-带 MuJoCo Viewer：
+旋转阻抗：
+
+```text
+M_cmd = Kr e_R + Dr e_omega
+```
+
+其中：
+
+- `Kr`：旋转刚度，单位 `N*m/rad`；
+- `Dr`：旋转阻尼，单位 `N*m*s/rad`；
+- `M_cmd`：末端虚拟恢复力矩。
+
+完整 6D wrench：
+
+```text
+W_cmd = [F_cmd, M_cmd]
+```
+
+再使用 Task04 的完整 Jacobian transpose：
+
+```text
+tau_task = J^T W_cmd
+```
+
+最终：
+
+```text
+tau_total = J^T (W_cmd + W_ext) + g(q)
+```
+
+### Stage-2 实验
+
+```text
+experiments/task05_cartesian_impedance_6d.py
+```
+
+同一个外部 wrench 同时包含：
+
+```text
+F_ext = [6, 0, 0] N
+M_ext = [0, 1.2, 0] N*m
+```
+
+比较：
+
+```text
+translation_only
+vs
+full_6d
+```
+
+两组使用相同的平移增益：
+
+```text
+Kt = 250 N/m
+Dt = 35 N*s/m
+```
+
+`full_6d` 额外使用：
+
+```text
+Kr = 20 N*m/rad
+Dr = 4 N*m*s/rad
+```
+
+实验目的不是证明某个参数“最好”，而是验证：
+
+> 在相同外部转矩扰动下，translation-only 不会主动恢复姿态，而 full-6D impedance 会通过 `M_cmd` 抵抗并恢复姿态。
+
+### 运行
 
 ```bash
-python3 experiments/task05_cartesian_impedance.py \
+python3 experiments/task05_cartesian_impedance_6d.py \
   --model ~/mujoco_menagerie/franka_fr3/scene.xml \
   --viewer
 ```
 
-Viewer 默认显示 `damped` case：
+输出：
+
+```text
+outputs/task05/pose_impedance_3d_vs_6d.png
+outputs/task05/translation_only_6d_stage.csv
+outputs/task05/full_6d_6d_stage.csv
+```
+
+Viewer：
 
 ```text
 绿色球   = desired TCP position
 黄色球   = actual TCP position
-红色箭头 = external disturbance force
-橙色箭头 = impedance restoring force F_cmd
+RGB 箭头 = current TCP axes
+红色箭头 = external force
+橙色箭头 = impedance restoring force
+紫色箭头 = external moment axis
+青色箭头 = impedance restoring moment axis
 ```
 
-整个扰动—恢复过程会循环播放。
+---
 
-## 输出
+## Task05 与 Task02 / Task04 的联系
+
+Task02：
 
 ```text
-outputs/task05/stiffness_comparison.png
-outputs/task05/damping_comparison.png
-outputs/task05/soft.csv
-outputs/task05/hard.csv
-outputs/task05/low_damping.csv
-outputs/task05/damped.csv
+joint error -> joint PD -> joint torque
 ```
 
-终端自动输出：
-
-- peak Cartesian position error；
-- 外力撤去前的 TCP X 位移；
-- 理想 `F/K` 位移；
-- 外力撤去后的 5 mm recovery time；
-- 最大姿态漂移。
-
-## 为什么第一版会记录 orientation drift
-
-第一阶段控制的是：
+Task04：
 
 ```text
-p in R^3
+Cartesian wrench -> J^T -> joint torque
 ```
 
-而不是完整 6D pose。
-
-因此：
+Task05：
 
 ```text
-F_cmd = [Fx,Fy,Fz]
-```
-
-没有主动生成末端姿态恢复力矩。机器人具有 7 个关节自由度，保持 TCP 位置并不等价于保持 TCP 姿态，所以姿态可能发生漂移。
-
-这不是第一版控制器的 bug，而是“只控制 3D 平移”的自然结果。后续扩展 6D impedance 时再显式加入姿态误差和旋转刚度/阻尼。
-
-## 验收
-
-- 四组仿真均无 NaN / Inf；
-- TCP 在外力作用下产生可见位移，撤去外力后能向目标恢复；
-- 相同 `F_ext` 下，高 `Kx` 的位移明显小于低 `Kx`；
-- 相同 `Kx` 下，提高 `Dx` 能明显改变振荡和恢复过程；
-- 能解释近似静态关系 `F ≈ Kx * dx`；
-- 能解释为什么高刚度不等于“更好的阻抗控制”；
-- 能解释为什么只做 3D 平移阻抗时，TCP orientation 不受约束；
-- 能把 Task04 的 `J^T W` 与本 Task 的虚拟弹簧/阻尼联系起来。
-
-## 教学门禁
-
-完成后应能用自己的话解释完整链路：
-
-```text
-TCP position/velocity error
+Cartesian pose/velocity error
         ↓
 virtual Cartesian spring + damper
         ↓
-F_cmd
+W_cmd
         ↓
-Jv^T F_cmd
+J^T W_cmd
         ↓
 joint torque
 ```
 
-并能说明阻抗控制的目标不是“无论外力多大都死死保持位置”，而是规定“外力—位移/速度”之间的动态关系。
+因此阻抗控制的目标不是“无论外力多大都死死保持位置”，而是规定：
+
+> 外力/外力矩作用下，末端应该表现出怎样的位移、姿态偏转、速度和恢复特性。
+
+---
+
+## 验收
+
+Stage 1：
+
+- TCP 在外力作用下产生可见位移；
+- 高 `Kx` 的位移明显小于低 `Kx`；
+- 提高 `Dx` 能明显改变振荡与速度峰值；
+- 能解释 `F ≈ Kx * dx` 的理想含义与实际偏差；
+- 能解释 3D 平移阻抗为什么不约束 orientation。
+
+Stage 2：
+
+- translation-only 与 full-6D 均无 NaN/Inf；
+- 在相同外部 moment 下，full-6D 的 orientation drift 明显小于 translation-only；
+- 能解释 `e_R` 为什么不能用普通矩阵/四元数直接相减；
+- 能解释 `Kr` 与 `Dr` 分别对应“旋转弹簧”和“旋转阻尼”；
+- 能把完整链路 `pose error -> W_cmd -> J^T W_cmd -> tau` 说清楚。
