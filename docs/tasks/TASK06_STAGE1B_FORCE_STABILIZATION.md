@@ -184,3 +184,51 @@ tracking to 10 N: NOT YET PASS
 ```
 
 下一轮保持滤波与 `20 N/s` command 限速不变，将 PI 积分增益提高到 `Ki=0.8`，并把仿真时间延长到 `9 s`，验证能否在不重新引入 chatter 的情况下进入并保持 `10 +/- 0.5 N` 目标带。
+
+## 2026-09-18 最终稳定化结果
+
+最终稳定版参数：
+
+```text
+P : Kp=0.8, Ki=0
+PI: Kp=0.8, Ki=0.8
+force filter tau = 0.040 s
+command slew rate = 20 N/s
+simulation duration = 9.0 s
+```
+
+实验结果：
+
+```text
+P:
+  steady error      = 6.0005 N
+  rise90            = NaN
+  settle +/-0.5 N   = NaN
+  force STD         = 0.0049 N
+  force ripple      = 0.0168 N
+  contact loss      = 0 %
+  raw peak force    = 4.7452 N
+
+PI:
+  steady error      = 0.1327 N
+  rise90            = 3.9820 s
+  settle +/-0.5 N   = 5.4280 s
+  overshoot         = 0 %
+  force STD         = 0.0221 N
+  force ripple      = 0.0765 N
+  contact loss      = 0 %
+  raw peak force    = 9.9026 N
+```
+
+结论：PI 在不引入明显 chatter、overshoot 或 contact loss 的前提下，将法向接触力稳定推进到 10 N 附近；最后 1 s 的测得接触力约为 9.83~9.90 N，steady-state error 仅约 0.13 N。P 则保持稳定但存在约 6 N 的显著稳态误差。
+
+Stage 1B 状态：
+
+```text
+stability: PASS
+tracking: PASS
+contact continuity: PASS
+Task06 Stage 1B: PASS
+```
+
+下一步进入 Stage 2：在相同 PI controller 下改变 MuJoCo 接触参数，比较 softer / firmer surface 对 rise time、overshoot、force ripple 和稳定性的影响。
