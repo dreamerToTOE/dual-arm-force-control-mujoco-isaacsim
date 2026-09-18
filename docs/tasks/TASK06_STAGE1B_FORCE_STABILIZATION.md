@@ -27,13 +27,13 @@ F_meas_raw -> low-pass -> F_meas_filtered -> P/PI
 时间常数：
 
 ```text
-tau_filter = 0.030 s
+tau_filter = 0.040 s
 ```
 
 2. push-force command slew-rate limit：
 
 ```text
-|dF_cmd/dt| <= 40 N/s
+|dF_cmd/dt| <= 20 N/s
 ```
 
 避免 force command 在相邻仿真步之间近似瞬间跳变。
@@ -45,11 +45,7 @@ P : Kp = 0.8, Ki = 0
 PI: Kp = 0.8, Ki = 0.8
 ```
 
-4. 更柔和的接触基线：
-
-```text
-solref = 0.030 1.0
-```
+4. 接触前 approach 保持 Stage 1 已验证参数；低通、限速和低增益只在建立接触后启用。
 
 Stage 2 再系统比较不同接触刚度/阻尼。
 
@@ -168,3 +164,23 @@ sustained settling time
 ```
 
 目标是：PI 相比 P 明显减小 steady error，同时不以持续高频振荡或频繁失去接触为代价。
+
+## 2026-09-18 实验结果
+
+第一次稳定化运行得到：
+
+```text
+P : steady error = 6.0363 N, STD = 0.0055 N, ripple = 0.0189 N, contact loss = 0%
+PI: steady error = 2.9255 N, STD = 0.0055 N, ripple = 0.0189 N, contact loss = 0%
+```
+
+结论：滤波 + command slew-rate limit 已经基本消除了 Stage 1 的高频接触力抖振，且接触连续性良好；但 PI 最大 raw contact force 仅约 `7.08 N`，未达到 `0.9*F_des = 9 N`，因此 `rise90` 和 sustained settling time 均为 NaN。
+
+因此 Stage 1B 当前状态是：
+
+```text
+stability: PASS
+tracking to 10 N: NOT YET PASS
+```
+
+下一轮保持滤波与 `20 N/s` command 限速不变，将 PI 积分增益提高到 `Ki=0.8`，并把仿真时间延长到 `9 s`，验证能否在不重新引入 chatter 的情况下进入并保持 `10 +/- 0.5 N` 目标带。
