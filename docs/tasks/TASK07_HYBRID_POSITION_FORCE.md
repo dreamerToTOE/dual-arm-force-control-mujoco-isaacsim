@@ -165,3 +165,80 @@ Task07 完成后应该能够解释：
 并且明确：
 
 > Task07 解决的是单机械臂任务空间方向解耦；双臂之间如何分配 wrench 要到 Task09。
+
+
+## 2026-09-18 第一轮实验
+
+第一轮使用：
+
+```text
+surface timeconst = 0.015 s
+surface friction = 0.20
+slide distance = 40 mm
+slide duration = 4.0 s
+```
+
+选择矩阵验证：
+
+```text
+S_p + S_f = I      : PASS
+S_p S_f = 0        : PASS
+```
+
+但控制质量未通过：
+
+```text
+X RMS error        = 14.858 mm
+X max error        = 21.028 mm
+actual X travel    = 19.275 mm / 40 mm desired
+
+mean normal force  = 10.5855 N
+force STD          = 3.3393 N
+force ripple       = 15.0329 N
+contact loss       = 3.184 %
+orientation error  = 2.251 deg
+```
+
+结论：
+
+- selection matrices 的数学结构正确；
+- 但开始切向滑动后，摩擦/接触约束通过真实机器人动力学重新耦合到法向力；
+- raw contact force 出现明显 chatter，切向位置跟踪也严重滞后；
+- 因此这轮只能判定“数学结构 PASS、控制质量 NOT YET PASS”。
+
+这说明：
+
+> 选择矩阵实现的是 command-space 的方向分工，不意味着真实机器人/接触系统的动力学完全解耦。
+
+### 第二轮稳定化设置
+
+为了让 Task07 先专注验证 Hybrid Position/Force 的核心概念，而不是让高摩擦 stick-slip 成为主要问题：
+
+```text
+surface timeconst : 0.015 -> 0.050 s
+surface friction  : 0.20  -> 0.05
+slide duration    : 4.0   -> 5.0 s
+duration          : 12.0  -> 13.0 s
+```
+
+其余核心结构保持不变：
+
+```text
+S_p = diag(1,1,0,1,1,1)
+S_f = diag(0,0,1,0,0,0)
+F_des = 10 N
+PI gains = Kp=0.8, Ki=0.8
+```
+
+第二轮新增明确的 control-quality gate：
+
+```text
+X RMS error       < 5 mm
+X max error       < 10 mm
+|mean force error|< 0.5 N
+force STD         < 0.5 N
+force ripple      < 2 N
+contact loss      < 0.5 %
+```
+
+只有满足这些指标，Task07 才正式 PASS。
