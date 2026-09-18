@@ -164,3 +164,52 @@ Stage 2 不要求三种表面都得到完全相同的曲线。
 4. 为什么真实机器人做 force control 时，controller gains 必须结合被接触环境一起调试。
 
 完成这一步后，Task06 的“接触力闭环基础”就可以结束，下一步进入 Task07 Hybrid Position/Force Control。
+
+## 2026-09-18 实验结果
+
+相同稳定 PI 控制器：
+
+```text
+Kp = 0.8
+Ki = 0.8
+F_des = 10 N
+filter tau = 0.040 s
+command slew rate = 20 N/s
+```
+
+三种接触条件：
+
+```text
+soft     : timeconst = 0.050 s
+baseline : timeconst = 0.015 s
+firm     : timeconst = 0.008 s
+```
+
+实验结果：
+
+```text
+surface    rise90[s]  settle[s]  overshoot[%]  steady err[N]  STD[N]  ripple[N]  loss[%]  penetration[mm]
+soft          3.9300     5.3520        0.000         0.1225      0.0215    0.0744    0.000      0.18271
+baseline      3.9920     5.4420        0.000         0.1345      0.0222    0.0769    0.000      0.01712
+firm          4.0700     5.5340        0.000         0.1449      0.0230    0.0798    0.000      0.00487
+```
+
+主要结论：
+
+1. 同一 PI 控制器在三种接触动力学下均稳定，无 overshoot、无 contact loss；
+2. soft contact 需要显著更大的 penetration 才建立约 10 N 法向力；firm contact penetration 最小；
+3. 在当前保守 PI + 低通滤波 + command slew limit 下，三种表面的 force tracking 差异被明显压缩，rise/settle 仅有小幅变化；
+4. firm case 初始接触冲击更明显，但随后受到滤波和 command 限速约束，长期响应仍然稳定；
+5. 本实验说明 controller gains 不能与 contact dynamics 完全割裂，但一个足够保守且带工程化稳定措施的力环可以覆盖一定范围的接触条件。
+
+Stage 2 状态：
+
+```text
+soft: PASS
+baseline: PASS
+firm: PASS
+Task06 Stage 2: PASS
+Task06 overall: PASS
+```
+
+下一步进入 Task07 Hybrid Position/Force Control：显式使用位置/力选择矩阵，把切向位置控制与法向力控制写成统一结构。
