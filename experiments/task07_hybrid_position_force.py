@@ -69,7 +69,7 @@ POST_SLIDE_HOLD = 1.0
 
 SURFACE_TIMECONST = 0.050
 SURFACE_DAMPING_RATIO = 1.0
-SURFACE_FRICTION = "0.05 0.005 0.0001"
+SURFACE_FRICTION = "0 0 0"
 
 INITIAL_FORCE_COMMAND = 4.0
 FORCE_COMMAND_LIMIT = 16.0
@@ -111,6 +111,10 @@ def build_task07_scene(fr3_xml: Path, output_xml: Path) -> tuple[float, float]:
             geom.set("solref", f"{SURFACE_TIMECONST:.6f} {SURFACE_DAMPING_RATIO:.6f}")
             geom.set("solimp", "0.9 0.95 0.001 0.5 2")
             geom.set("friction", SURFACE_FRICTION)
+            # Stage-1 hybrid-control teaching scene: normal constraint only.
+            # Removing tangential friction isolates the selection-matrix concept;
+            # friction/stick-slip robustness is intentionally deferred.
+            geom.set("condim", "1")
             found.add(geom.get("name"))
 
     missing = {"task06_probe", "task06_surface"} - found
@@ -125,8 +129,8 @@ def build_position_controller() -> CartesianImpedance6D:
     # A full 6D impedance wrench is computed first.  The selection matrix will
     # deliberately remove its Z force so that Z is not position-controlled.
     return CartesianImpedance6D.from_gains(
-        translational_stiffness=[500.0, 500.0, 250.0],
-        translational_damping=[45.0, 45.0, 35.0],
+        translational_stiffness=[800.0, 800.0, 250.0],
+        translational_damping=[60.0, 60.0, 35.0],
         rotational_stiffness=[20.0, 20.0, 20.0],
         rotational_damping=[4.0, 4.0, 4.0],
         force_limits=[35.0, 35.0, 30.0],
