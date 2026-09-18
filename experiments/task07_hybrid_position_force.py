@@ -640,10 +640,19 @@ def main() -> None:
     print(f"\nPlot : {plot_path}")
     print(f"CSV  : {csv_path}")
     print(f"Scene: {contact_xml}")
+    control_pass = (
+        m["x_rms_mm"] < 5.0
+        and m["x_max_mm"] < 10.0
+        and abs(m["force_error_mean"]) < 0.5
+        and m["force_std"] < 0.5
+        and m["force_ripple"] < 2.0
+        and m["contact_loss_ratio"] < 0.5
+    )
+    print("\nNumerical execution: PASS (no NaN/Inf).")
+    print("Control-quality acceptance:", "PASS" if control_pass else "NOT YET PASS")
     print(
-        "\nPASS: the hybrid simulation completed without NaN/Inf. "
-        "Acceptance target: track tangential X while maintaining normal force "
-        "with continuous contact and complementary selection matrices."
+        "Targets: X RMS < 5 mm, X max < 10 mm, |mean force error| < 0.5 N, "
+        "force STD < 0.5 N, ripple < 2 N, contact loss < 0.5%."
     )
 
     if args.viewer:
