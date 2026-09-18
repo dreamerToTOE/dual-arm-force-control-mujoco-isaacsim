@@ -242,3 +242,56 @@ contact loss      < 0.5 %
 ```
 
 只有满足这些指标，Task07 才正式 PASS。
+
+
+### 第三轮：理想法向约束面
+
+第二轮虽然降低了摩擦并放慢滑动，但仍存在：
+
+```text
+X RMS error      = 12.974 mm
+X max error      = 18.287 mm
+actual X travel  = 21.054 mm / 40 mm
+
+force STD        = 1.3079 N
+force ripple     = 12.2956 N
+contact loss     = 0.572 %
+```
+
+说明切向接触/摩擦仍在明显干扰本 Task 的核心教学目标。
+
+因此第三轮将 Task07 的第一阶段进一步理想化：
+
+```text
+contact condim = 1
+tangential friction = 0
+```
+
+即只保留法向接触约束，让 X/Y 运动不再受到接触摩擦影响。
+
+同时提高切向位置支路增益：
+
+```text
+Kx = Ky = 800 N/m
+Dx = Dy = 60 N*s/m
+```
+
+法向力支路保持：
+
+```text
+F_des = 10 N
+PI: Kp=0.8, Ki=0.8
+```
+
+这一轮的目的不是“逃避摩擦”，而是遵守项目教学原则：**每个 Task 只增加一个主要新概念**。
+
+Task07 只验证：
+
+```text
+X/Y -> position control
+Z   -> force control
+```
+
+能否通过互补选择矩阵同时工作。
+
+摩擦、stick-slip、接触鲁棒性将在后续 robustness task 中重新加入。
