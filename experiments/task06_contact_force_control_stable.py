@@ -55,7 +55,7 @@ FORCE_COMMAND_LIMIT = 16.0
 INITIAL_FORCE_COMMAND = 4.0
 FORCE_FILTER_TAU = 0.040
 COMMAND_SLEW_RATE = 20.0  # N/s
-DURATION = 7.0
+DURATION = 9.0
 
 SETTLE_BAND = 0.5
 SETTLE_HOLD = 0.25
@@ -98,7 +98,7 @@ def build_force_controller(mode: str) -> ForcePIController:
     if mode == "pi":
         return ForcePIController(
             kp=0.8,
-            ki=0.35,
+            ki=0.8,
             command_min=0.5,
             command_max=FORCE_COMMAND_LIMIT,
             integral_limit=16.0,
@@ -537,7 +537,7 @@ def main() -> None:
     print(f"Force filter tau       : {FORCE_FILTER_TAU:.3f} s")
     print(f"Command slew rate      : {COMMAND_SLEW_RATE:.1f} N/s")
     print("P gains                : Kp=0.8, Ki=0")
-    print("PI gains               : Kp=0.8, Ki=0.35")
+    print("PI gains               : Kp=0.8, Ki=0.8")
     print(f"HOME TCP z             : {home_tcp_z:.5f} m")
     print(f"Surface z              : {surface_z:.5f} m")
 
