@@ -331,3 +331,115 @@ contact wrench feasibility
 并理解：
 
 > QP 本身不会自动知道“什么叫物理合理”。只有把真实系统的约束写进优化问题，它才会在物理可行域里寻找最优解。
+
+
+## 2026-09-21 Stage 2 实验结果
+
+### Case A — physical-contact baseline
+
+```text
+W_L = [ 6.1313, 0, 4.9050, 0, 0, 0 ]
+W_R = [-6.1313, 0, 4.9050, 0, 0, 0 ]
+
+vertical load split  : 4.905 / 4.905 N
+normal compression   : 6.1313 / 6.1313 N
+friction utilization : 100 % / 100 %
+```
+
+由于：
+
+```text
+|Fz| <= mu Fn
+mu = 0.8
+Fz = 4.905 N
+```
+
+最小代价解会选择：
+
+```text
+Fn = 4.905 / 0.8 = 6.13125 N
+```
+
+因此 baseline 恰好位于 friction-pyramid 边界。数学上可行，但没有额外摩擦裕度。
+
+### Case B1 — 同一 torque bottleneck，无 contact constraints
+
+```text
+Fz_L = -11.7529 N
+Fz_R =  21.5629 N
+
+Fn_L = -1.1261 N
+Fn_R = -1.1261 N
+```
+
+两侧法向力为负，意味着普通侧面接触需要“向外拉”物体，因此违反 unilateral-contact 物理假设。
+
+### Case B2 — 同一 torque bottleneck，有 contact constraints
+
+```text
+Fz_L = -12.4823 N
+Fz_R =  22.2923 N
+
+Fn_L = 27.8654 N
+Fn_R = 27.8654 N
+
+friction utilization:
+left  = 55.99 %
+right = 100.00 %
+
+My_L = 2.0000 N*m
+My_R = 0.4516 N*m
+```
+
+该解满足：
+
+- inward normal force >= 0；
+- friction-pyramid inequality；
+- contact moment limits；
+- joint torque limits；
+- Gf = W_obj_des。
+
+因此它是当前简化 contact model 下的**物理可行解**。
+
+需要注意：`Fz_L < 0` 本身并不违反摩擦接触。它表示左接触通过摩擦对物体施加向下的切向力，而右接触施加更大的向上切向力；两者合计仍为 9.81 N。
+
+QP 为了满足左臂 J4 的严格 torque limit，主动增加了一对约 27.9 N 的相反法向夹紧力。这对法向力在物体合力中互相抵消，因此属于 internal compression / internal wrench 成分。
+
+所以 Stage 2 的正确结论不是：
+
+> contact constraints 会自动得到“人类直觉上最均匀”的分配。
+
+而是：
+
+> contact constraints 把优化限制在接触物理允许的集合内；在这个集合里，QP 仍会利用 internal wrench 自由度来满足其它约束。
+
+### Case C — contact capacity 不足
+
+```text
+Fn,max = 2 N/contact
+mu = 0.8
+
+maximum total vertical friction = 3.2 N
+required vertical support       = 9.81 N
+```
+
+结果：
+
+```text
+success = False
+max contact violation = 3.305
+```
+
+说明 contact-feasibility 检测正确。
+
+### Stage 2 状态
+
+```text
+unilateral normal constraint : PASS
+friction-pyramid constraint  : PASS
+contact moment bounds        : PASS
+torque + contact coupled QP  : PASS
+contact infeasibility test   : PASS
+```
+
+下一步 Task10 将显式研究 internal force / internal wrench，而不再让它只是 QP 自由度中的隐含结果。
