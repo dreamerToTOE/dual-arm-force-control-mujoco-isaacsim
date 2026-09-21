@@ -205,3 +205,56 @@ outputs/task08/dual_arm_shared_object.csv
 > 两个独立 Cartesian controller 能形成一个 baseline，但它不能自动解决 wrench distribution 和 internal force。
 
 这正是 Task09 与 Task10 存在的原因。
+
+
+## 2026-09-21 第一轮场景初始化问题
+
+第一轮出现明显异常：
+
+```text
+desired object lift  = +40 mm
+actual object travel = -275.207 mm
+object RMS error     = 314.077 mm
+relative grasp RMS   = 929.999 mm
+```
+
+Viewer 中左右末端也明显没有保持在 SharedBox 两侧。
+
+该结果不是控制器性能问题，而是第一版 weld equality 初始化错误，因此本轮数据作废。
+
+### 根因
+
+第一版使用 body-based weld：
+
+```text
+shared_box <-> left_fr3_link7
+shared_box <-> right_fr3_link7
+```
+
+但没有显式给出 `relpose`。
+
+MuJoCo 此时会按模型参考构型 `qpos0` 记录 body-body 相对位姿；而双 FR3 在模型加载后又被程序设置到：
+
+```text
+HOME_Q = [0, 0, 0, -pi/2, 0, pi/2, -pi/4]
+```
+
+于是仿真开始时，实际 HOME 构型与 weld 在 `qpos0` 保存的参考关系严重不一致，constraint solver 会立即强行拉动两臂和 SharedBox，造成场景“炸开”。
+
+### 修复
+
+当前版本先生成一个无 weld 的临时双臂模型：
+
+```text
+load dual FR3
+-> set both arms to HOME_Q
+-> forward kinematics
+-> compute shared_box -> left_link7 relative pose
+-> compute shared_box -> right_link7 relative pose
+-> write both explicit weld relpose
+-> reload final scene
+```
+
+因此最终 weld 约束在 HOME 构型下从一开始就是满足的，不再依赖错误的 `qpos0` 相对关系。
+
+控制参数没有因为这一问题而调节。
