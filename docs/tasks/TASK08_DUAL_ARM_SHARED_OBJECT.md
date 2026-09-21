@@ -258,3 +258,37 @@ load dual FR3
 因此最终 weld 约束在 HOME 构型下从一开始就是满足的，不再依赖错误的 `qpos0` 相对关系。
 
 控制参数没有因为这一问题而调节。
+
+
+## 2026-09-21 修复后实验结果
+
+修复 weld relpose 初始化后：
+
+```text
+Object RMS pos error   = 11.504 mm
+Object max pos error   = 14.985 mm
+Actual object Z travel = 26.940 mm / 40 mm desired
+
+Left TCP RMS error     = 11.498 mm
+Right TCP RMS error    = 11.498 mm
+
+Relative grasp RMS err = 0.2601 mm
+Relative grasp max err = 0.3335 mm
+Object max ori error   = 0.0001 deg
+
+Left peak |F_cmd|      = 11.657 N
+Right peak |F_cmd|     = 11.657 N
+Left peak |tau|        = 32.721 N m
+Right peak |tau|       = 32.721 N m
+```
+
+结论：
+
+- weld 初始化问题已修复；
+- 双臂与 SharedBox 的相对抓持几何能够稳定保持；
+- 左右臂响应高度对称；
+- object-level reference 能够生成一致的左右 TCP reference；
+- 简单的独立 Cartesian impedance baseline 仍存在约 11.5 mm 量级的 object tracking error，且 40 mm 目标抬升只实现约 26.9 mm；
+- Task08 不继续以反复调参为目标，后续重点转向 Task09 wrench distribution。
+
+运行结束后若只在 MuJoCo Viewer 关闭阶段出现 native segmentation fault，但 CSV/plot 和数值仿真已经完整输出，应先用不带 `--viewer` 的同一命令隔离确认。若无 Viewer 时不再崩溃，则该问题单独归类为 Viewer/GLFW shutdown 问题，不把它混同为控制仿真失败。
