@@ -125,6 +125,68 @@ def _copy_if_present(src_root: ET.Element, dst_root: ET.Element, tag: str) -> No
         dst_root.append(copy.deepcopy(elem))
 
 
+def _rotation_matrix_to_quat_wxyz(r: np.ndarray) -> np.ndarray:
+    """Convert a 3x3 rotation matrix to a normalized MuJoCo wxyz quaternion."""
+    r = np.asarray(r, dtype=float).reshape(3, 3)
+    tr = float(np.trace(r))
+
+    if tr > 0.0:
+        s = np.sqrt(tr + 1.0) * 2.0
+        qw = 0.25 * s
+        qx = (r[2, 1] - r[1, 2]) / s
+        qy = (r[0, 2] - r[2, 0]) / s
+        qz = (r[1, 0] - r[0, 1]) / s
+    elif r[0, 0] > r[1, 1] and r[0, 0] > r[2, 2]:
+        s = np.sqrt(1.0 + r[0, 0] - r[1, 1] - r[2, 2]) * 2.0
+        qw = (r[2, 1] - r[1, 2]) / s
+        qx = 0.25 * s
+        qy = (r[0, 1] + r[1, 0]) / s
+        qz = (r[0, 2] + r[2, 0]) / s
+    elif r[1, 1] > r[2, 2]:
+        s = np.sqrt(1.0 + r[1, 1] - r[0, 0] - r[2, 2]) * 2.0
+        qw = (r[0, 2] - r[2, 0]) / s
+        qx = (r[0, 1] + r[1, 0]) / s
+        qy = 0.25 * s
+        qz = (r[1, 2] + r[2, 1]) / s
+    else:
+        s = np.sqrt(1.0 + r[2, 2] - r[0, 0] - r[1, 1]) * 2.0
+        qw = (r[1, 0] - r[0, 1]) / s
+        qx = (r[0, 2] + r[2, 0]) / s
+        qy = (r[1, 2] + r[2, 1]) / s
+        qz = 0.25 * s
+
+    q = np.array([qw, qx, qy, qz], dtype=float)
+    q /= np.linalg.norm(q)
+    return q
+
+
+def _weld_relpose(
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    body1_name: str,
+    body2_name: str,
+) -> np.ndarray:
+    """Return explicit weld relpose satisfied by the current configuration.
+
+    body1 is the reference frame.  The translation is body2's origin expressed
+    in body1, and the quaternion is body2's orientation relative to body1.
+    """
+    id1 = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body1_name)
+    id2 = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body2_name)
+    if id1 < 0 or id2 < 0:
+        raise RuntimeError(f"Missing body for weld relpose: {body1_name}, {body2_name}")
+
+    p1 = np.asarray(data.xpos[id1], dtype=float)
+    p2 = np.asarray(data.xpos[id2], dtype=float)
+    r1 = np.asarray(data.xmat[id1], dtype=float).reshape(3, 3)
+    r2 = np.asarray(data.xmat[id2], dtype=float).reshape(3, 3)
+
+    p_rel = r1.T @ (p2 - p1)
+    r_rel = r1.T @ r2
+    q_rel = _rotation_matrix_to_quat_wxyz(r_rel)
+    return np.concatenate((p_rel, q_rel))
+
+
 def build_dual_scene(fr3_xml: Path, output_xml: Path) -> None:
     src_tree = ET.parse(fr3_xml)
     src_root = src_tree.getroot()
@@ -178,8 +240,8 @@ def build_dual_scene(fr3_xml: Path, output_xml: Path) -> None:
     right_base.set("quat", _fmt(RIGHT_BASE_QUAT))
     worldbody.append(right_base)
 
-    # Temporary box position is chosen from the known symmetric base placement.
-    # The exact grasp geometry is established by equality constraints at qpos0.
+    # The box is centered between the two HOME TCPs.  Explicit weld relposes
+    # are computed below from the HOME configuration (not from qpos0).
     box_body = ET.SubElement(
         worldbody,
         "body",
@@ -203,6 +265,28 @@ def build_dual_scene(fr3_xml: Path, output_xml: Path) -> None:
         },
     )
 
+    # IMPORTANT: body-based welds with no explicit relpose inherit the relative
+    # transform from model.qpos0.  Our experiment later moves both robots from
+    # qpos0=0 to HOME_Q, so using the implicit weld pose would create a huge
+    # constraint violation at t=0.  Build a temporary unconstrained model,
+    # place both arms at HOME_Q, and explicitly encode the weld relposes that
+    # are satisfied in that HOME configuration.
+    output_xml.parent.mkdir(parents=True, exist_ok=True)
+    preweld_xml = output_xml.with_name(output_xml.stem + "_preweld.xml")
+    ET.ElementTree(root).write(preweld_xml, encoding="unicode")
+
+    pre_model = mujoco.MjModel.from_xml_path(str(preweld_xml))
+    pre_data = mujoco.MjData(pre_model)
+    pre_left, pre_right = make_adapters(pre_model, pre_data)
+    set_home(pre_left, pre_right)
+
+    left_relpose = _weld_relpose(
+        pre_model, pre_data, "shared_box", "left_fr3_link7"
+    )
+    right_relpose = _weld_relpose(
+        pre_model, pre_data, "shared_box", "right_fr3_link7"
+    )
+
     equality = ET.SubElement(root, "equality")
     ET.SubElement(
         equality,
@@ -211,6 +295,7 @@ def build_dual_scene(fr3_xml: Path, output_xml: Path) -> None:
             "name": "left_grasp_weld",
             "body1": "shared_box",
             "body2": "left_fr3_link7",
+            "relpose": _fmt(left_relpose),
             "solref": "0.010 1",
             "solimp": "0.95 0.99 0.001 0.5 2",
         },
@@ -222,13 +307,14 @@ def build_dual_scene(fr3_xml: Path, output_xml: Path) -> None:
             "name": "right_grasp_weld",
             "body1": "shared_box",
             "body2": "right_fr3_link7",
+            "relpose": _fmt(right_relpose),
             "solref": "0.010 1",
             "solimp": "0.95 0.99 0.001 0.5 2",
         },
     )
 
-    output_xml.parent.mkdir(parents=True, exist_ok=True)
     ET.ElementTree(root).write(output_xml, encoding="unicode")
+    preweld_xml.unlink(missing_ok=True)
 
 
 def make_adapters(model: mujoco.MjModel, data: mujoco.MjData) -> tuple[MuJoCoAdapter, MuJoCoAdapter]:
