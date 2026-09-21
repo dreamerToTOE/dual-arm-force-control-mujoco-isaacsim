@@ -61,9 +61,9 @@ from sim.mujoco_adapter import MuJoCoAdapter
 POSITION_MASK = np.array([1.0, 1.0, 0.0, 1.0, 1.0, 1.0])
 
 APPROACH_EXTRA = 0.012
-DURATION = 13.0
+DURATION = 17.0
 FORCE_SETTLE_WAIT = 5.6
-SLIDE_DURATION = 5.0
+SLIDE_DURATION = 8.0
 SLIDE_DISTANCE = 0.040
 POST_SLIDE_HOLD = 1.0
 
@@ -129,8 +129,8 @@ def build_position_controller() -> CartesianImpedance6D:
     # A full 6D impedance wrench is computed first.  The selection matrix will
     # deliberately remove its Z force so that Z is not position-controlled.
     return CartesianImpedance6D.from_gains(
-        translational_stiffness=[800.0, 800.0, 250.0],
-        translational_damping=[60.0, 60.0, 35.0],
+        translational_stiffness=[1200.0, 1200.0, 250.0],
+        translational_damping=[80.0, 80.0, 35.0],
         rotational_stiffness=[20.0, 20.0, 20.0],
         rotational_damping=[4.0, 4.0, 4.0],
         force_limits=[35.0, 35.0, 30.0],
@@ -623,6 +623,7 @@ def main() -> None:
     print(f"Slide duration         : {SLIDE_DURATION:.2f} s")
     print(f"Slide starts after     : {FORCE_SETTLE_WAIT:.2f} s from first contact")
     print(f"Surface friction       : {SURFACE_FRICTION.split()[0]}")
+    print("Tangential gains       : Kx=Ky=1200 N/m, Dx=Dy=80 N*s/m")
     print(f"HOME TCP z             : {home_z:.5f} m")
 
     print("\n=== Task07 metrics during tangential slide ===")
