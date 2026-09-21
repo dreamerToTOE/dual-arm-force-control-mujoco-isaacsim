@@ -295,3 +295,34 @@ Z   -> force control
 能否通过互补选择矩阵同时工作。
 
 摩擦、stick-slip、接触鲁棒性将在后续 robustness task 中重新加入。
+
+
+### 第四轮：准静态 Hybrid 验证
+
+第三轮（frictionless normal contact）结果：
+
+```text
+X RMS error       = 8.244 mm
+X max error       = 11.015 mm
+actual X travel   = 27.928 mm / 40 mm
+
+mean force error  = -0.7160 N
+force STD         = 0.7281 N
+force ripple      = 2.1850 N
+contact loss      = 0.000 %
+```
+
+相比第二轮，contact continuity 已经解决，force ripple 也接近验收门槛；主要剩余问题是 X 方向动态跟踪滞后。
+
+这说明剩余误差主要来自当前位置支路本身只是 Cartesian impedance，没有操作空间惯性/科氏项前馈或逆动力学补偿。为了让 Task07 继续只验证“位置/力方向分工”，第四轮采用更准静态的轨迹并提高切向阻抗增益：
+
+```text
+slide duration : 5.0 -> 8.0 s
+total duration : 13.0 -> 17.0 s
+Kx = Ky        : 800 -> 1200 N/m
+Dx = Dy        : 60  -> 80 N*s/m
+```
+
+选择矩阵、法向 PI 和 frictionless normal-contact 教学场景保持不变。
+
+这一轮的目标是验证：在较慢的切向运动下，互补选择矩阵能否同时实现低 X tracking error 与稳定 10 N 法向力。
