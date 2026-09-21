@@ -76,6 +76,75 @@ def dual_grasp_matrix(
     )
 
 
+def side_grasp_contact_constraints(
+    friction_coefficient: float,
+    normal_force_max: float,
+    moment_limits: Sequence[float] = (2.0, 2.0, 2.0),
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return A,b for A f <= b for symmetric side contacts.
+
+    Wrench convention for f=[W_L;W_R]:
+        W_i = [Fx, Fy, Fz, Mx, My, Mz]
+
+    The forces are the forces applied ON THE OBJECT.
+
+    Contact normals point inward:
+        left  normal: +X, so F_n,L = +Fx_L
+        right normal: -X, so F_n,R = -Fx_R
+
+    Constraints:
+        F_n >= 0
+        F_n <= normal_force_max
+        |Fy| + |Fz| <= mu F_n      (linear friction pyramid)
+        |Mx|, |My|, |Mz| <= moment_limits
+    """
+    mu = float(friction_coefficient)
+    nmax = float(normal_force_max)
+    mlim = np.asarray(moment_limits, dtype=float)
+
+    if mu <= 0.0:
+        raise ValueError("friction_coefficient must be positive")
+    if nmax <= 0.0:
+        raise ValueError("normal_force_max must be positive")
+    if mlim.shape != (3,) or np.any(mlim < 0.0):
+        raise ValueError("moment_limits must contain three non-negative values")
+
+    rows: list[np.ndarray] = []
+    bounds: list[float] = []
+
+    def add(coeffs: dict[int, float], bound: float) -> None:
+        row = np.zeros(12, dtype=float)
+        for index, value in coeffs.items():
+            row[index] = float(value)
+        rows.append(row)
+        bounds.append(float(bound))
+
+    # Unilateral normal force and maximum normal force.
+    # Left:  0 <= Fx_L <= nmax.
+    add({0: -1.0}, 0.0)
+    add({0: 1.0}, nmax)
+
+    # Right: 0 <= -Fx_R <= nmax  ->  Fx_R <= 0 and -Fx_R <= nmax.
+    add({6: 1.0}, 0.0)
+    add({6: -1.0}, nmax)
+
+    # Conservative linear friction pyramid:
+    # |Fy| + |Fz| <= mu * F_n.
+    for sy in (-1.0, 1.0):
+        for sz in (-1.0, 1.0):
+            add({1: sy, 2: sz, 0: -mu}, 0.0)
+            add({7: sy, 8: sz, 6: mu}, 0.0)
+
+    # Independent contact-moment bounds.
+    for local_index, limit in zip((3, 4, 5), mlim):
+        add({local_index: 1.0}, limit)
+        add({local_index: -1.0}, limit)
+        add({local_index + 6: 1.0}, limit)
+        add({local_index + 6: -1.0}, limit)
+
+    return np.vstack(rows), np.asarray(bounds, dtype=float)
+
+
 @dataclass
 class WrenchAllocationResult:
     success: bool
@@ -87,6 +156,7 @@ class WrenchAllocationResult:
     tau_left: np.ndarray | None
     tau_right: np.ndarray | None
     max_torque_violation: float
+    max_linear_inequality_violation: float
     objective: float
 
 
@@ -158,6 +228,8 @@ class DualArmWrenchQP:
         gravity_right: Sequence[float] | None = None,
         torque_limits_left: Sequence[float] | None = None,
         torque_limits_right: Sequence[float] | None = None,
+        linear_inequality_A: np.ndarray | None = None,
+        linear_inequality_b: Sequence[float] | None = None,
         max_iterations: int = 500,
     ) -> WrenchAllocationResult:
         w_des = np.asarray(desired_object_wrench, dtype=float)
@@ -191,6 +263,33 @@ class DualArmWrenchQP:
         torque_map = None
         torque_bias = None
         torque_limits = None
+
+        linear_a = None
+        linear_b = None
+        if linear_inequality_A is not None or linear_inequality_b is not None:
+            if linear_inequality_A is None or linear_inequality_b is None:
+                raise ValueError(
+                    "linear_inequality_A and linear_inequality_b must be provided together"
+                )
+            linear_a = np.asarray(linear_inequality_A, dtype=float)
+            linear_b = np.asarray(linear_inequality_b, dtype=float)
+            if linear_a.ndim != 2 or linear_a.shape[1] != 12:
+                raise ValueError(
+                    f"linear_inequality_A must have shape (m,12), got {linear_a.shape}"
+                )
+            if linear_b.shape != (linear_a.shape[0],):
+                raise ValueError(
+                    "linear_inequality_b must have one bound for each inequality row"
+                )
+
+            # A f <= b  ->  b - A f >= 0 for SLSQP.
+            constraints.append(
+                {
+                    "type": "ineq",
+                    "fun": lambda x, a=linear_a, b=linear_b: b - a @ x,
+                    "jac": lambda x, a=linear_a: -a,
+                }
+            )
 
         torque_args = (
             jacobian_left,
@@ -254,6 +353,12 @@ class DualArmWrenchQP:
         x = np.asarray(result.x, dtype=float)
         equality_residual = float(np.linalg.norm(self.G @ x - w_des, ord=np.inf))
 
+        max_linear_inequality_violation = 0.0
+        if linear_a is not None and linear_b is not None:
+            max_linear_inequality_violation = float(
+                max(0.0, np.max(linear_a @ x - linear_b))
+            )
+
         tau_left = None
         tau_right = None
         max_torque_violation = 0.0
@@ -269,12 +374,14 @@ class DualArmWrenchQP:
             result.success
             and equality_residual < 1e-6
             and max_torque_violation < 1e-6
+            and max_linear_inequality_violation < 1e-6
         )
         status = str(result.message)
         if not success and result.success:
             status = (
                 f"numerical solution rejected: eq_residual={equality_residual:.3e}, "
-                f"torque_violation={max_torque_violation:.3e}"
+                f"torque_violation={max_torque_violation:.3e}, "
+                f"linear_ineq_violation={max_linear_inequality_violation:.3e}"
             )
 
         return WrenchAllocationResult(
@@ -287,5 +394,6 @@ class DualArmWrenchQP:
             tau_left=tau_left,
             tau_right=tau_right,
             max_torque_violation=max_torque_violation,
+            max_linear_inequality_violation=max_linear_inequality_violation,
             objective=objective(x),
         )
