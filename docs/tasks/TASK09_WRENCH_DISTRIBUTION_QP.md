@@ -302,3 +302,81 @@ joint torque
 并明确：
 
 > QP 不负责决定物体“想做什么”；物体期望 wrench 已经由上层任务给定。QP 负责在满足这个物体任务的前提下，选择一组更合适的左右臂 wrench。
+
+
+## 2026-09-21 Stage 1 实验结果
+
+### 几何与目标
+
+```text
+W_obj_des = [0, 0, 9.81, 0, 0, 0]
+
+r_L = [-0.070501, 0, 0.00000243] m
+r_R = [ 0.070501, 0, 0.00000243] m
+
+G shape = (6, 12)
+rank(G) = 6
+```
+
+这意味着 12 个左右末端 wrench 分量只受到 6 个物体 wrench 等式约束，因此存在非唯一分配与 6 维 null-space / internal-wrench 自由度。
+
+### Case A — 正常 torque limits
+
+```text
+W_L = [0, 0, 4.905, 0, 0, 0]
+W_R = [0, 0, 4.905, 0, 0, 0]
+
+Gf = [0, 0, 9.81, 0, 0, 0]
+equality residual = 0
+```
+
+对称抓取、对称权重与对称关节限制下，QP 自动得到 50/50 静态承重分配。
+
+### Case B — 左臂 J2 torque limit 收紧
+
+```text
+baseline |tau_L,J2| = 28.7195 N m
+new limit           = 15.7957 N m
+
+W_L =
+[ 10.585, 0, -10.255, 0, 1.4319, 0 ]
+
+W_R =
+[-10.585, 0,  20.065, 0, 0.7057, 0 ]
+
+Gf residual          = 1.776e-15
+max torque violation = 7.745e-13 N m
+```
+
+QP 成功满足物体 wrench 与 torque limit，但分配出现：
+
+- 左臂向下的 `Fz`；
+- 右臂承担超过物体重量的向上 `Fz`；
+- 左右相反的 `Fx`；
+- 配套的 `My`。
+
+这些分量在物体层面互相抵消，因此不改变目标物体 wrench，但会改变两臂各自的关节负担。
+
+这说明当前 Stage 1 只有 object-wrench equality + joint-torque limits，还没有加入真实抓取的 unilateral/contact admissibility constraints。由于 Task08 使用 ideal weld，weld 可以数学上承受拉、压、剪切和力矩，因此这种分配在当前模型中允许，但对真实吸盘/夹持接触未必物理可行。
+
+### Case C — 故意不可行
+
+```text
+success              = False
+equality residual    = 8.882e-16
+max torque violation = 24.08 N m
+```
+
+优化器返回的候选点仍能满足 `Gf=W_des`，但严重违反 torque inequality，因此程序正确将该结果拒绝为 infeasible / failure，而没有把它当成合法 wrench allocation。
+
+### Stage 1 结论
+
+```text
+grasp matrix construction : PASS
+symmetric allocation       : PASS
+torque-aware redistribution: PASS
+infeasibility detection    : PASS
+physical contact realism   : NOT YET INCLUDED
+```
+
+下一阶段需要给末端 wrench 增加物理可行域约束，例如法向力方向、力/力矩上限以及后续的 friction-cone / contact-wrench constraints，避免 QP 利用 ideal weld 的“任意拉压能力”得到数学可行但真实抓取不可实现的解。
