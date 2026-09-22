@@ -322,3 +322,46 @@ null(G)
 所以：
 
 > 两只手可以同时增加一对大小相同、方向相反的夹紧力，箱子仍然完全不获得额外净力；但机械臂自己的关节负担与接触安全裕度会发生明显变化。
+
+
+## 2026-09-22 Stage 1 实验结果
+
+固定物体任务：
+
+```text
+W_obj_des = [0, 0, 9.81, 0, 0, 0]
+mu = 0.8
+Fn,max = 30 N/contact
+```
+
+internal compression sweep：
+
+```text
+ref[N]  actual[N]  friction L/R[%]  torque L/R[%]  ||G f_int||inf  object Fx/Fz[N]
+  6.5      6.500      94.33/94.33      30.83/30.83      0.000e+00      0.000/9.810
+ 10.0     10.000      61.31/61.31      29.66/29.66      0.000e+00      0.000/9.810
+ 15.0     15.000      40.87/40.88      30.83/30.83      1.776e-15      0.000/9.810
+ 20.0     20.000      30.66/30.66      35.29/35.29      0.000e+00      0.000/9.810
+ 25.0     25.000      24.52/24.53      39.75/39.75      3.553e-15      0.000/9.810
+ 40.0     30.000      20.44/20.44      44.21/44.21      ~0             0.000/9.810
+```
+
+主要结论：
+
+1. `G f_internal = 0` 数值验证通过，null-space residual 约为 1e-15 或更小；
+2. internal compression 增大时，object wrench 保持不变；
+3. internal compression 增大时，friction utilization 明显下降，即摩擦裕度增加；
+4. joint torque utilization 整体随 internal compression 增大而上升，但不是严格单调，因为增加某个方向的 internal force 可能在某些构型下先部分抵消已有的重力/任务关节力矩；
+5. 当 desired compression=40 N 超过 contact normal max=30 N 时，QP 将 realized compression 截止在 30 N，而不违反约束。
+
+Stage 1 状态：
+
+```text
+null-space decomposition : PASS
+internal-force reference : PASS
+friction-margin tradeoff : PASS
+torque-loading tradeoff  : PASS
+constraint saturation    : PASS
+```
+
+注意：当前 Stage 1 是静态 wrench allocation / reference shaping，还不是基于实测 internal-force feedback 的动态闭环。若继续做 Task10 Stage 2，可进一步研究动态 closed-chain 中的 internal-force feedback control。
