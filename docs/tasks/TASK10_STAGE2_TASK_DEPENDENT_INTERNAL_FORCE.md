@@ -139,3 +139,47 @@ outputs/task10/stage2/task_dependent_internal_force.png
 outputs/task10/stage2/task_dependent_internal_force.csv
 outputs/task10/stage2/task10_stage2_geometry.xml
 ~~~
+
+
+## 2026-09-22 实验结果
+
+实验参数：
+
+~~~text
+m = 1.0 kg
+mu = 0.8
+gamma = 1.5
+Fn allowed = 6.5 .. 30 N/contact
+~~~
+
+结果：
+
+~~~text
+scenario              Fy_obj  Fz_obj  Fn_min  Fn_sched  Fn_actual  friction[%]  torque[%]
+downward_accel          0.00    7.81    4.88      7.32       7.32       66.7       29.9
+static_hold             0.00    9.81    6.13      9.20       9.20       66.7       29.9
+upward_accel            0.00   11.81    7.38     11.07      11.07       66.7       29.9
+lateral_move            2.00    9.81    7.38     11.07      11.07       66.7       29.3
+combined_accel          2.00   11.81    8.63     12.95      12.95       66.7       29.7
+aggressive_combined     6.00   13.81   12.38     18.57      18.57       66.7       35.5
+~~~
+
+结论：
+
+1. internal-force reference 已从固定人工设定改为 task-dependent scheduling；
+2. 任务切向载荷增大时，所需 normal compression 自动增大；
+3. QP realized compression 与 scheduler reference 一致，说明当前场景下 reference 可行；
+4. friction utilization 基本保持 1/gamma = 66.7%，说明 safety factor 对摩擦裕度的含义得到直接验证；
+5. aggressive task 下 joint-torque utilization 上升到约 35.5%，体现了更高抓持裕度需要更高 actuator effort；
+6. reconstructed object force 与 task demand 一致，说明 internal-force scheduling 没有破坏 object-level wrench task。
+
+Stage 2 状态：
+
+~~~text
+task-dependent scheduler : PASS
+QP reference tracking    : PASS
+friction margin shaping  : PASS
+object wrench preservation: PASS
+~~~
+
+当前仍属于 feed-forward/reference scheduling，不包含真实 internal-force measurement feedback，也不处理 mu 估计误差、外部扰动、吸盘泄漏等不确定性；这些属于后续 robustness layer。
