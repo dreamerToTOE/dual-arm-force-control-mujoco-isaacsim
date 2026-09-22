@@ -1,4 +1,8 @@
-# Task11 — Robustness Experiments
+# Task11：力控鲁棒性与扰动实验
+
+## 当前项目决策
+
+2026-09-22：本阶段暂缓，不删除、不判失败。当前优先完成 Task12--14：Isaac Sim Adapter、跨仿真验证和码垛整合。鲁棒性批量实验保留为后续论文/工程增强项。
 
 ## Stage 1：Nominal Model vs True Physics
 
